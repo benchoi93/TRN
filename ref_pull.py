@@ -1,3 +1,4 @@
+import time
 from elsapy.elsclient import ElsClient
 from elsapy.elsdoc import FullDoc, AbsDoc
 import httpx
@@ -19,13 +20,88 @@ def _extract_reference_block(full_text: str) -> str:
     """
     Heuristic: last occurrence of a references header.
     """
-    headers = [r"\nreferences\n", r"\nREFERENCES\n", r"\nReferences\n", r"\nBibliography\n"]
+    headers = [r"references", r"REFERENCES", r"References", r"Bibliography"]
     idx = -1
     for h in headers:
         m = list(re.finditer(h, full_text))
         if m:
             idx = max(idx, m[-1].start())
     return full_text[idx:].strip() if idx != -1 else ""
+
+def _parse_references_LLM(reference_block: str, full_text: str, model: str = "gpt-5-nano", api_key = None) -> List[Dict[str, str]]:
+
+    """
+    Parses a references section into a canonical list using an LLM.
+    Returns list of {id, text, year, first_author}.
+    """
+    assert api_key is not None, "API key must be provided."
+    client = OpenAI(api_key=api_key)
+
+    sys_msg = (
+        "You are a scholarly assistant that extracts reference entries from a references section. "
+        "Given raw text of references, return a JSON array of objects with fields: "
+        "'id' (a unique identifier you create), 'text' (the full reference text), "
+        "'year' (publication year), and 'authors' (last names of all authors)."
+        "'title' (the title of the work), and 'venue' (the journal or conference name)."
+    )
+
+    user_msg = {
+        "role": "user",
+        "content": f"Here is the references section:\n\n{reference_block}\n\n"
+                   f"Here is the full text:\n\n{full_text}\n\n"
+                   "Return the parsed references as a JSON array."
+    }
+
+    schema = {
+        "name": "ParsedReferences",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "references": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "text": {"type": "string"},
+                            "year": {"type": "string"},
+                            "first_author": {"type": "string"},
+                            "title": {"type": "string"},
+                            "authors": {"type": "array", "items": {"type": "string"}},
+                            "venue": {"type": "string"},
+                            "evidence_sentences": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            }
+                        },
+                        "required": ["id", "text", "year", "first_author", "title", "authors", "venue", "evidence_sentences"],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            "required": ["references"],
+            "additionalProperties": False
+        }
+    }
+    response_format={
+        "type": "json_schema",
+        "json_schema": schema
+    }
+    now = time.time()
+    print("Sending request to LLM for reference parsing...")
+    resp= client.chat.completions.create(
+        model=model,
+        messages=[{"role": "system", "content": sys_msg}, user_msg],
+        response_format=response_format
+    )
+    print(f"Response received. - Time taken: {time.time() - now:.2f} seconds")
+
+    content = resp.choices[0].message.content
+    data = json.loads(content)
+
+    return data
+
 
 def _parse_references(reference_block: str) -> List[Dict[str, str]]:
     """
@@ -107,7 +183,7 @@ def _collect_evidence_sentences(body_text: str) -> List[Dict[str, Any]]:
 
 
 
-def get_top_inspiring_references(full_text: str, k: int = 5, model: str = "gpt-4o-mini", api_key = None) -> List[Dict[str, Any]]:
+def get_top_inspiring_references(title: str, abstract: str, full_text: str, k: int = 5, model: str = "gpt-4o-mini", api_key = None) -> List[Dict[str, Any]]:
     """
     Identify top-K most 'inspiring' references for a paper whose full_text includes a References section.
     Returns a list of {ref_id, title_or_citation, inspiration_score, rationale, evidence_sentences}.
@@ -121,22 +197,31 @@ def get_top_inspiring_references(full_text: str, k: int = 5, model: str = "gpt-4
     body = full_text.replace(ref_block, "") if ref_block else full_text
 
     # 2) Parse references & evidence sentences
-    refs = _parse_references(ref_block or full_text[-20000:])  # fallback to tail if header missing
+    # refs = _parse_references(ref_block or full_text[-20000:])  # fallback to tail if header missing
+    refs = _parse_references_LLM(ref_block,full_text, model=model, api_key=api_key) if ref_block else []
     if not refs:
         raise ValueError("Could not find any reference entries in the provided text.")
-    evidence = _collect_evidence_sentences(body)
+    # evidence = _collect_evidence_sentences(body)
 
     # Trim to keep prompts manageable
     # cap references and evidence if extremely large
-    MAX_REFS = 300
-    MAX_EVID = 1200
-    refs_trim = refs[:MAX_REFS]
-    evid_trim = evidence[:MAX_EVID]
+    # MAX_REFS = 300
+    # MAX_EVID = 1200
+    refs_trim = refs["references"]
+    evidences_trim = []
+    for refs in refs_trim:
+        evidences = []
+        for ev in refs["evidence_sentences"]:
+            if len(evidences) >= 10:
+                break
+            evidences.append(ev)
+        refs["evidence_sentences"] = evidences
+        evidences_trim.extend(evidences)
+    # evid_trim = evidence[:MAX_EVID]
 
     # 3) Ask the model to map evidence -> references and score 'inspiration'
     # Enforce structured output with JSON Schema (Structured Outputs).
     # See: https://platform.openai.com/docs/guides/structured-outputs/examples
-
 
     schema = {
         "name": "TopRefs",
@@ -192,20 +277,28 @@ def get_top_inspiring_references(full_text: str, k: int = 5, model: str = "gpt-4
     user_msg = {
         "role": "user",
         "content": [
+            {"type": "text", "text": "Title of the paper:"},
+            {"type": "text", "text": title},
+            {"type": "text", "text": "Abstract of the paper:"},
+            {"type": "text", "text": abstract},
             {"type": "text", "text": "Reference list (as parsed lines):"},
-            {"type": "text", "text": json.dumps(refs_trim, ensure_ascii=False)[:200_000]},  # safe cap
-            {"type": "text", "text": "\nCitation evidence sentences (from the body):"},
-            {"type": "text", "text": json.dumps(evid_trim, ensure_ascii=False)[:400_000]},
-            {"type": "text", "text": f"\nReturn ONLY the top {k} references by inspiration_score (descending). "
+            {"type": "text", "text": json.dumps(refs_trim, ensure_ascii=False)},  # safe cap
+            {"type": "text", "text": "Citation evidence sentences (from the body):"},
+            {"type": "text", "text": json.dumps(evidences_trim, ensure_ascii=False)[:400_000]},
+            {"type": "text", "text": f"Return ONLY the top {k} references by inspiration_score (descending). "
                                       f"If fewer than {k} are clearly inspiring, return fewer."}
         ]
     }
 
+    now = time.time()
+    print("Sending request to LLM...")
     resp= client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": sys_msg}, user_msg],
         response_format=response_format
     )
+    print("Response received. - Time taken: {:.2f} seconds".format(time.time() - now))
+
     import pickle
     pickle.dump(resp, open("debug_resp.pkl", "wb"))
     # content = resp.output[0].content[0].text if hasattr(resp, "output") else resp.output_text  # SDK variants
@@ -247,7 +340,21 @@ uri = fulldoc.uri
 
 fulldoc.read(client)
 fulltext = fulldoc.data["originalText"]
+title = fulldoc.data["coredata"]["dc:title"]
+abstract = fulldoc.data["coredata"].get("dc:description", "")
 
 openapi_key = os.getenv("OPENAI_API_KEY")  # Replace with your OpenAI API key
-response = get_top_inspiring_references(fulltext, k=5, model="gpt-4o-mini", api_key=openapi_key)
+response = get_top_inspiring_references(title, abstract, fulltext, k=5, model="gpt-4o-mini", api_key=openapi_key)
+
+for i, ref in enumerate(response):
+    print(f"Rank {i+1}:")
+    print(f" Title: {ref['title']}")
+    print(f" Authors: {', '.join(ref['authors'])} ({ref['year']})")
+    print(f" DOI: {ref['doi']}")
+    print(f" Inspiration Score: {ref['inspiration_score']:.3f}")
+    print(f" Rationale: {ref['rationale']}")
+    print(" Evidence Sentences:")
+    for sent in ref['evidence_sentences']:
+        print(f"  - {sent}")
+    print("\n")
 
