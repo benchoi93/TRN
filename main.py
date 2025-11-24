@@ -54,17 +54,21 @@ df["month"] = month_abbrev.fillna(month_full)
 df = df.sort_values(by=["year", "month"], ascending=False)
 
 df_filtered = df[df["year"].isin([2024])]
+df_filtered.reset_index(drop=True, inplace=True)
 
 from pathlib import Path
 output_dir = Path("trc_2024_inspiring_refs")
 output_dir.mkdir(exist_ok=True)
 
 from tqdm import tqdm
+import json
 
-for _, row in tqdm(df_filtered.iterrows(), total=len(df_filtered)):
+for i, row in tqdm(df_filtered.iterrows(), total=len(df_filtered)):
     doi = row["prism:doi"]
     inspiring_refs = extract_inspiring_references(doi, API_KEY, INST_KEY, OPENAI_KEY)
     out_filename = output_dir / (doi.replace("/", "_") + "_inspiring_refs.json")
     with open(out_filename, "w", encoding="utf-8") as f:
         json.dump(inspiring_refs, f, ensure_ascii=False, indent=2)
 
+    if i >= 10:  # limit to first 10 papers for testing
+        break

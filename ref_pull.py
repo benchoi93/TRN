@@ -296,17 +296,27 @@ def enrich_references_with_llm(
         for r in ref_list
     ]
 
+
     prompt = f"""
 You are given a block of references from an academic paper and a list of partially
 filled reference entries extracted automatically. Your task is to match each
 item in the list to its corresponding full reference in the text and fill
 missing information (venue, pages, etc.).
 
-Rules:
-- Return a list of JSON objects (same length as the input list) in order.
-- Each object must include all required fields.
+IMPORTANT HARD REQUIREMENTS:
+- The input list has {len(compact_refs)} items.
+- You MUST return a JSON list with EXACTLY {len(compact_refs)} objects.
+- For EACH input item, you MUST return ONE AND ONLY ONE output object.
+- Do NOT merge, drop, or add any items.
+- Copy the 'idx' field from each input item into the corresponding output object
+  WITHOUT changing it. This is how we align input and output.
+- Return objects in the SAME ORDER as the input list.
+
+Other rules:
+- Each object must include all required fields (including 'idx').
 - Do not invent information that is not visible in the reference text.
-- If uncertain, keep the field empty string "".
+- If uncertain, keep the field as an empty string "".
+- Output MUST be valid JSON, with no comments or extra text, only the list.
 
 Reference list (incomplete, to complete):
 {json.dumps(compact_refs, ensure_ascii=False, indent=2)}
@@ -331,10 +341,6 @@ Reference block (source text):
 
 
     try:
-        # print("Parsing LLM response...")
-        # content = resp.output[0].content[0].text  # type: ignore[attr-defined]
-        # parsed = json.loads(content)
-        # enriched_refs = parsed.get("references", [])
         content = resp.choices[0].message.content
         parsed = json.loads(content)
         enriched_refs = parsed.get("references", [])
@@ -342,6 +348,10 @@ Reference block (source text):
         print("Failed to parse LLM response, falling back to original references.")
         enriched_refs = ref_list  # fallback if parsing fails
 
+    if len(enriched_refs) != len(ref_list):
+        print("Warning: LLM returned different number of references than input. Falling back to original.")
+        # return ref_list  # fallback
+    
     # keep original evidence_sentences
     for i, r in enumerate(enriched_refs):
         r["evidence_sentences"] = ref_list[i].get("evidence_sentences", [])
@@ -712,7 +722,7 @@ def extract_inspiring_references(
     Given a DOI, retrieve the full text and references, and identify the most inspiring references.
     Returns a list of references with inspiration scores and rationales.
     """
-
+    print(f"Extracting inspiring references for DOI: {doi}")
     # Initialize client with your API key
     client = ElsClient(api_key=api_key, inst_token=inst_token)
 
@@ -767,28 +777,28 @@ if __name__ == "__main__":
 
     # doi = "10.1016/j.trc.2021.103091"   # Non-OA example
     # doi = "10.1016/j.tre.2023.103213" # OA example
-
-    doi_list = [
-        "10.1016/j.trpro.2015.07.010", 
-        "10.1016/j.trc.2021.103114",
-        "10.1016/j.trc.2017.08.005",
-        "10.1016/j.trc.2023.104354",
-        "10.1016/j.trb.2015.06.011",
-        "10.1016/j.trc.2014.05.011",
-        "10.1016/j.trc.2022.103668",
-        "10.1016/j.trc.2023.104049",
-        "10.1016/j.tre.2023.103213",
-        "10.1016/j.trc.2021.103091" 
-    ]
+    doi = "10.1016/j.trc.2024.104907"
+    # doi_list = [
+    #     "10.1016/j.trpro.2015.07.010", 
+    #     "10.1016/j.trc.2021.103114",
+    #     "10.1016/j.trc.2017.08.005",
+    #     "10.1016/j.trc.2023.104354",
+    #     "10.1016/j.trb.2015.06.011",
+    #     "10.1016/j.trc.2014.05.011",
+    #     "10.1016/j.trc.2022.103668",
+    #     "10.1016/j.trc.2023.104049",
+    #     "10.1016/j.tre.2023.103213",
+    #     "10.1016/j.trc.2021.103091" 
+    # ]
 
     # inspiring_refs = extract_inspiring_references(doi, API_KEY, INST_KEY, OPENAI_KEY)
-    for doi in doi_list:
-        print(f"Processing DOI: {doi}")
-        inspiring_refs = extract_inspiring_references(doi, API_KEY, INST_KEY, OPENAI_KEY)
-        # print(f"Top inspiring references for DOI {doi}:")
+    # for doi in doi_list:
+    print(f"Processing DOI: {doi}")
+    inspiring_refs = extract_inspiring_references(doi, API_KEY, INST_KEY, OPENAI_KEY)
+    # print(f"Top inspiring references for DOI {doi}:")
 
-        # dump to JSON file
-        out_filename = doi.replace("/", "_") + "_inspiring_refs.json"
-        with open(out_filename, "w", encoding="utf-8") as f:
-            json.dump(inspiring_refs, f, ensure_ascii=False, indent=2)
-        # print(f"Results saved to {out_filename}\n")
+    # dump to JSON file
+    out_filename = doi.replace("/", "_") + "_inspiring_refs.json"
+    with open(out_filename, "w", encoding="utf-8") as f:
+        json.dump(inspiring_refs, f, ensure_ascii=False, indent=2)
+    # print(f"Results saved to {out_filename}\n")
