@@ -5,6 +5,7 @@ import os
 
 load_dotenv("config.env")
 API_KEY = os.getenv("ELSEVIER_KEY")  # Replace with your Elsevier API key
+INST_TOKEN = os.getenv("ELSEVIER_INSTTOKEN")  # Replace with your Elsevier Institution Token if needed
 
 def scopus_fulltext_via_ip(doi: str, apikey: str):
     """
@@ -35,13 +36,14 @@ def scopus_fulltext_via_ip(doi: str, apikey: str):
         
 
 
-def scopus_ref_via_ip(doi: str, apikey: str):
+def scopus_ref_via_ip(doi: str, apikey: str, insttoken: str):
     """
     Try to retrieve full-text JSON from Elsevier Article API using institutional IP entitlement.
     Works only if your public IP is recognized as subscribed.
     """
     headers = {
         "X-ELS-APIKey": apikey,
+        "X-ELS-Insttoken": insttoken,
         "Accept": "application/json"
     }
 
@@ -115,7 +117,7 @@ if __name__ == "__main__":
     else:
         print("\n⚠️ No 'originalText' returned — likely not entitled via current IP.")
 
-    references = scopus_ref_via_ip(doi, API_KEY)
+    references = scopus_ref_via_ip(doi, API_KEY, INST_TOKEN)
 
     # === Reference list ===
     refs = extract_references(data)
@@ -123,3 +125,6 @@ if __name__ == "__main__":
     for r in refs[:5]:  # show first 5
         print(f"- {r['authors']} ({r['year']}): {r['title']}")
         print(f"  {r['fulltext']}\n")
+
+    
+

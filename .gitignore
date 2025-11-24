@@ -217,3 +217,7 @@ __marimo__/
 
 
 *.env
+
+*.json
+old_result/
+*.pkl
