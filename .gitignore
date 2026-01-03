@@ -221,3 +221,4 @@ __marimo__/
 *.json
 old_result/
 *.pkl
+data/

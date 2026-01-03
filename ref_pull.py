@@ -1,3 +1,6 @@
+from typing import List, Dict, Any, Optional
+import json
+import hashlib
 from tqdm import tqdm
 import re
 from datetime import datetime
@@ -7,7 +10,10 @@ from elsapy.elsdoc import FullDoc, AbsDoc
 import httpx
 from dotenv import load_dotenv
 import os
-import os, re, json, math
+import os
+import re
+import json
+import math
 from typing import List, Dict, Any
 from openai import OpenAI
 
@@ -22,6 +28,7 @@ def timeit(func):
         return result
     return wrapper
 
+
 def _extract_reference_block(full_text: str) -> str:
     """
     Heuristic: last occurrence of a references header.
@@ -33,6 +40,7 @@ def _extract_reference_block(full_text: str) -> str:
         if m:
             idx = max(idx, m[-1].start())
     return full_text[idx:].strip() if idx != -1 else ""
+
 
 def scopus_ref_via_ip(doi: str, apikey: str, insttoken: str):
     """
@@ -61,12 +69,13 @@ def scopus_ref_via_ip(doi: str, apikey: str, insttoken: str):
             print(r.text[:500])
             r.raise_for_status()
 
-        return r.json()        
+        return r.json()
 
 
 def year_from_coverdate(cd):
     # "2004-01-01" -> "2004"
     return cd.split("-")[0]
+
 
 def build_ref_index(scopus_refs):
     """Return dict { (surname_lower, year): [ref_obj, ...] } in case of duplicates."""
@@ -148,7 +157,6 @@ def find_citations_in_text(text):
             }
 
 
-
 def map_citations_to_refs(text, scopus_refs):
     ref_index = build_ref_index(scopus_refs)
     result = {}  # (surname_lower, year_no_suffix) -> list of occurrences
@@ -183,8 +191,30 @@ def preprocess_refs(refs):
         first_author = authors[0].get("ce:surname", "").lower()
         year = ref.get("prism:coverDate", "")[:4]
         title = ref.get("title", "")
+        # Compute a stable id for the reference. Prefer DOI or arXiv if present; otherwise
+        # use any existing dc:identifier, or fall back to a deterministic hash of the raw_match/title.
+        raw_match = ref.get("raw_match", "") or title or json.dumps(ref, ensure_ascii=False)
+        id_val = ""
+        # Try to extract DOI from raw text
+        doi_m = re.search(r"(10\.\d{4,9}/\S+)", raw_match)
+        if doi_m:
+            id_val = doi_m.group(1)
+        else:
+            # Try common arXiv patterns
+            arxiv_m = re.search(r"arXiv[:\s]*([0-9]{4}\.\d{4,5}|[a-zA-Z\-]+/\d{7,8})", raw_match, re.I)
+            if arxiv_m:
+                id_val = f"arXiv:{arxiv_m.group(1)}"
+            else:
+                # use any dc:identifier if available
+                dcid = ref.get("dc:identifier", "")
+                if dcid:
+                    id_val = dcid
+                else:
+                    # Deterministic synthetic id using SHA1 of the raw_match
+                    id_val = "hash:" + hashlib.sha1(raw_match.encode("utf-8")).hexdigest()[:12]
+
         ref_info.append({
-            "id": ref.get("dc:identifier", ""),
+            "id": id_val,
             "first_author": first_author,
             "year": year,
             "title": title,
@@ -194,12 +224,13 @@ def preprocess_refs(refs):
         })
     return ref_info
 
-import re
+
 def split_sentences(text):
     text = re.sub(r'\s+', ' ', text)
     # crude but effective split for academic text
     sents = re.split(r'(?<=[.!?])\s+(?=[A-Z\(])', text)
     return sents
+
 
 def match_citations_in_sentence(sent, ref_info):
     matches = []
@@ -208,23 +239,21 @@ def match_citations_in_sentence(sent, ref_info):
         if re.search(pattern, sent):
             matches.append(r)
     return matches
+
+
 def build_citation_contexts(text, ref_info, window=1):
     sents = split_sentences(text)
-    results = { (r["first_author"], r["year"]): [] for r in ref_info }
+    results = {(r["first_author"], r["year"]): [] for r in ref_info}
     for i, s in enumerate(sents):
         matched_refs = match_citations_in_sentence(s, ref_info)
         if matched_refs:
             # add neighboring sentences if they continue the idea
-            context_sents = sents[max(0,i-window): min(len(sents), i+window+1)]
+            context_sents = sents[max(0, i-window): min(len(sents), i+window+1)]
             context = " ".join(context_sents)
             for r in matched_refs:
                 results[(r["first_author"], r["year"])].append(context)
     return results
 
-
-import json
-from openai import OpenAI
-from typing import List, Dict, Any, Optional
 
 @timeit
 def enrich_references_with_llm(
@@ -239,7 +268,6 @@ def enrich_references_with_llm(
     """
     client = OpenAI(api_key=api_key)
     enriched: List[Dict[str, Any]] = []
-
 
     schema = {
         "name": "references",
@@ -296,7 +324,6 @@ def enrich_references_with_llm(
         for r in ref_list
     ]
 
-
     prompt = f"""
 You are given a block of references from an academic paper and a list of partially
 filled reference entries extracted automatically. Your task is to match each
@@ -339,7 +366,6 @@ Reference block (source text):
     )
     # print(f"1. Response received. - Time taken: {time.time() - now:.2f} seconds")
 
-
     try:
         content = resp.choices[0].message.content
         parsed = json.loads(content)
@@ -351,16 +377,13 @@ Reference block (source text):
     if len(enriched_refs) != len(ref_list):
         print("Warning: LLM returned different number of references than input. Falling back to original.")
         # return ref_list  # fallback
-    
+
     # keep original evidence_sentences
     for i, r in enumerate(enriched_refs):
         r["evidence_sentences"] = ref_list[i].get("evidence_sentences", [])
 
     return enriched_refs
 
-import json
-from typing import List, Dict, Any, Optional
-from openai import OpenAI
 
 @timeit
 def fill_evidence_sentences_batch(
@@ -493,11 +516,6 @@ Article body to search in:
     return merged
 
 
-
-import json
-from typing import List, Dict, Any, Optional
-from openai import OpenAI
-
 @timeit
 def score_inspiration(
     title: str,
@@ -539,34 +557,34 @@ def score_inspiration(
                             "first_author": {"type": "string"},
                             "year": {"type": "string"},
                             "title": {"type": "string"},
-                            "problem_inspiration": {"type": "integer"},      # 1–5
-                            "conceptual_inspiration": {"type": "integer"},
+                            "problem_concept_inspiration": {"type": "integer"},      # 1–5
+                            # "conceptual_inspiration": {"type": "integer"},
                             "method_inspiration": {"type": "integer"},
-                            "data_inspiration": {"type": "integer"},
-                            "evaluation_inspiration": {"type": "integer"},
+                            # "data_inspiration": {"type": "integer"},
+                            "data_evaluation_inspiration": {"type": "integer"},
                             # "overall_inspiration": {"type": "integer"},
                             # "rationale": {"type": "string"},
-                            "problem_inspiration_rationale": {"type": "string"},
-                            "conceptual_inspiration_rationale": {"type": "string"},
+                            "problem_concept_inspiration_rationale": {"type": "string"},
+                            # "conceptual_inspiration_rationale": {"type": "string"},
                             "method_inspiration_rationale": {"type": "string"},
-                            "data_inspiration_rationale": {"type": "string"},
-                            "evaluation_inspiration_rationale": {"type": "string"},
+                            "data_evaluation_inspiration_rationale": {"type": "string"},
+                            # "evaluation_inspiration_rationale": {"type": "string"},
                         },
                         "required": [
-                        "first_author", "year", "title",
-                        "problem_inspiration",
-                        "conceptual_inspiration",
-                        "method_inspiration",
-                        "data_inspiration",
-                        "evaluation_inspiration",
-                        # "overall_inspiration",
-                        # "rationale",
-                        "problem_inspiration_rationale",
-                        "conceptual_inspiration_rationale",
-                        "method_inspiration_rationale",
-                        "data_inspiration_rationale",
-                        "evaluation_inspiration_rationale",
-                    ],
+                            "first_author", "year", "title",
+                            "problem_concept_inspiration",
+                            # "conceptual_inspiration",
+                            "method_inspiration",
+                            # "data_inspiration",
+                            "data_evaluation_inspiration",
+                            # "overall_inspiration",
+                            # "rationale",
+                            "problem_concept_inspiration_rationale",
+                            # "conceptual_inspiration_rationale",
+                            "method_inspiration_rationale",
+                            "data_evaluation_inspiration_rationale",
+                            # "evaluation_inspiration_rationale",
+                        ],
                     },
                 }
             },
@@ -582,14 +600,43 @@ Paper title:
 Paper abstract:
 {abstract}
 
-You will evaluate how each cited paper inspired this paper along several dimensions:
-- PROBLEM: Did it define or strongly shape the problem setting, scenario, or research question?
-- CONCEPTS/THEORY: Did it provide core concepts, theoretical framing, or key definitions that this paper builds on?
-- METHODS: Did it provide algorithms, architectures, loss functions, or procedures that are reused or extended?
-- DATA: Did it introduce datasets or data collection protocols that this paper relies on?
-- EVALUATION: Did it define evaluation metrics, baselines, or experimental protocols that are adopted here?
+You will evaluate how each cited paper inspired this paper along three dimensions:
 
-Use a 1–5 scale for each:
+Inspiration Evaluation Criteria (3 Dimensions)
+
+1) PROBLEM / CONCEPTUAL (Problem framing & domain concepts)
+    - Did the cited paper define, motivate, or significantly shape the problem setting addressed in this paper?
+    - Did it introduce or formalize domain-specific concepts, assumptions, or terminology that this paper adopts (explicitly or implicitly)?
+    - Did it influence how the system, phenomenon, or decision context is conceptualized (e.g., what variables matter, what trade-offs are considered, what scenarios are meaningful)?
+    - Did it establish the scope or boundaries of the problem (e.g., operational regime, spatial/temporal scale, stakeholders, constraints)?
+
+Count this as high influence only if the evidence shows the cited paper directly shapes what problem is being studied or how it is framed,
+not merely that it is mentioned as background or prior related work.
+
+2) METHODOLOGICAL (Methods / modeling / analysis)
+   - Did it provide a methodological approach that is reused, adapted, or extended in this paper?
+     This may include (but is not limited to):
+       • Statistical inference / econometrics (e.g., regression forms, mixed effects, Bayesian models, hypothesis tests)
+       • Optimization / operations research (e.g., formulation, constraints, decomposition, heuristics, solution algorithms)
+       • Mathematical / physical modeling (e.g., governing equations, analytical derivations, calibration procedures)
+       • Machine learning / AI (e.g., architectures, objectives/losses, training/inference pipelines)
+       • Simulation / computational procedures (e.g., microsimulation setup, model coupling, numerical schemes)
+       • Estimation / filtering / data fusion (e.g., state estimation, filtering, sensor fusion procedures)
+   - Count it as high influence only if the evidence shows concrete methodological adoption
+     (reuse of a model class/formulation, adaptation of an algorithm, or extension of a procedure),
+     not just a generic statement like “prior work has studied X”.
+
+
+3) DATA + EVALUATION (Empirics)
+    - Did the cited paper introduce or define datasets, data collection protocols, sensing setups, or preprocessing procedures that this paper relies on?
+    - Did it establish measurement definitions, labeling strategies, or data quality assumptions that are reused?
+    - Did it define evaluation metrics, baselines, experimental designs, or validation protocols that this paper adopts or closely follows?
+    - Did it influence how performance, accuracy, uncertainty, robustness, or practical relevance is assessed?
+
+Count this as high influence only if the evidence shows explicit dependence on the data or evaluation framework of the cited paper,
+not merely that similar metrics or datasets exist in the literature.
+
+Use a 1–5 scale for each dimension:
 5 = central, this paper could not exist in its current form without this contribution
 4 = clearly important, strongly shapes this paper
 3 = relevant but not central
@@ -650,56 +697,49 @@ Return JSON with "scores": [...]
         # score_by_id[rid] = {"score": s["score"], "rationale": s["rationale"]}
         # compute overall score as average of components
         comp_scores = [
-            s.get("problem_inspiration", 1),
-            s.get("conceptual_inspiration", 1),
+            s.get("problem_concept_inspiration", 1),
             s.get("method_inspiration", 1),
-            s.get("data_inspiration", 1),
-            s.get("evaluation_inspiration", 1),
+            s.get("data_evaluation_inspiration", 1),
         ]
         overall_score = round(
-            0.3 * comp_scores[0] + # problem
-            0.3 * comp_scores[1] + # conceptual
-            0.2 * comp_scores[2] + # method
-            0.1 * comp_scores[3] + # data
-            0.1 * comp_scores[4],  # evaluation
+            0.6 * comp_scores[0] +  # problem
+            # 0.3 * comp_scores[1] +  # conceptual
+            0.3 * comp_scores[1] +  # method
+            # 0.1 * comp_scores[3] +  # data
+            0.1 * comp_scores[2],  # evaluation
             2
         )
 
         rationale_parts = [
-            f"Problem: {s.get('problem_inspiration_rationale','')}",
-            f"Conceptual: {s.get('conceptual_inspiration_rationale','')}",
+            f"Problem: {s.get('problem_concept_inspiration_rationale','')}",
+            # f"Conceptual: {s.get('conceptual_inspiration_rationale','')}",
             f"Method: {s.get('method_inspiration_rationale','')}",
-            f"Data: {s.get('data_inspiration_rationale','')}",
+            # f"Data: {s.get('data_inspiration_rationale','')}",
             f"Evaluation: {s.get('evaluation_inspiration_rationale','')}",
         ]
         full_rationale = rationale_parts
 
-        score_by_id[rid] = {"problem_inspiration": s.get("problem_inspiration", 1),
-                            "conceptual_inspiration": s.get("conceptual_inspiration", 1),
+        score_by_id[rid] = {"problem_concept_inspiration": s.get("problem_concept_inspiration", 1),
+                            # "conceptual_inspiration": s.get("conceptual_inspiration", 1),
                             "method_inspiration": s.get("method_inspiration", 1),
-                            "data_inspiration": s.get("data_inspiration", 1),
-                            "evaluation_inspiration": s.get("evaluation_inspiration", 1),
+                            "data_evaluation_inspiration": s.get("data_evaluation_inspiration", 1),
                             "overall_inspiration": overall_score,
                             "rationale": full_rationale}
-        
+
     for i, r in enumerate(refs_with_evidence):
         # rid = r.get("id", str(i))
         rid = f"{r.get('first_author','')}{r.get('year','')}{' '.join(r.get('title','').split()[:3])}"
         s = score_by_id.get(rid, {
-            "problem_inspiration": 1,
-            "conceptual_inspiration": 1,
+            "problem_concept_inspiration": 1,
             "method_inspiration": 1,
-            "data_inspiration": 1,
-            "evaluation_inspiration": 1,
+            "data_evaluation_inspiration": 1,
             "overall_inspiration": 1,
             "rationale": "No score returned."
         })
         new_r = dict(r)
-        new_r["problem_inspiration"] = s["problem_inspiration"]
-        new_r["conceptual_inspiration"] = s["conceptual_inspiration"]
+        new_r["problem_concept_inspiration"] = s["problem_concept_inspiration"]
         new_r["method_inspiration"] = s["method_inspiration"]
-        new_r["data_inspiration"] = s["data_inspiration"]
-        new_r["evaluation_inspiration"] = s["evaluation_inspiration"]
+        new_r["data_evaluation_inspiration"] = s["data_evaluation_inspiration"]
         new_r["inspiration_score"] = s["overall_inspiration"]
         new_r["inspiration_rationale"] = s["rationale"]
         enriched.append(new_r)
@@ -777,28 +817,31 @@ if __name__ == "__main__":
 
     # doi = "10.1016/j.trc.2021.103091"   # Non-OA example
     # doi = "10.1016/j.tre.2023.103213" # OA example
-    doi = "10.1016/j.trc.2024.104907"
-    # doi_list = [
-    #     "10.1016/j.trpro.2015.07.010", 
-    #     "10.1016/j.trc.2021.103114",
-    #     "10.1016/j.trc.2017.08.005",
-    #     "10.1016/j.trc.2023.104354",
-    #     "10.1016/j.trb.2015.06.011",
-    #     "10.1016/j.trc.2014.05.011",
-    #     "10.1016/j.trc.2022.103668",
-    #     "10.1016/j.trc.2023.104049",
-    #     "10.1016/j.tre.2023.103213",
-    #     "10.1016/j.trc.2021.103091" 
-    # ]
+    # doi = "10.1016/j.trc.2024.104907"
+    doi_list = [
+        "10.1016/j.trpro.2015.07.010",
+        "10.1016/j.trc.2021.103114",
+        "10.1016/j.trc.2017.08.005",
+        "10.1016/j.trc.2023.104354",
+        "10.1016/j.trb.2015.06.011",
+        "10.1016/j.trc.2014.05.011",
+        "10.1016/j.trc.2022.103668",
+        "10.1016/j.trc.2023.104049",
+        "10.1016/j.tre.2023.103213",
+        "10.1016/j.trc.2021.103091"
+    ]
 
     # inspiring_refs = extract_inspiring_references(doi, API_KEY, INST_KEY, OPENAI_KEY)
-    # for doi in doi_list:
-    print(f"Processing DOI: {doi}")
-    inspiring_refs = extract_inspiring_references(doi, API_KEY, INST_KEY, OPENAI_KEY)
-    # print(f"Top inspiring references for DOI {doi}:")
+    for doi in doi_list:
+        print(f"Processing DOI: {doi}")
+        inspiring_refs = extract_inspiring_references(doi, API_KEY, INST_KEY, OPENAI_KEY)
+        # print(f"Top inspiring references for DOI {doi}:")
 
-    # dump to JSON file
-    out_filename = doi.replace("/", "_") + "_inspiring_refs.json"
-    with open(out_filename, "w", encoding="utf-8") as f:
-        json.dump(inspiring_refs, f, ensure_ascii=False, indent=2)
-    # print(f"Results saved to {out_filename}\n")
+        # dump to JSON file
+        out_filename = doi.replace("/", "_") + "_inspiring_refs.json"
+        out_dir = os.path.join("data", "papers")
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, out_filename)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(inspiring_refs, f, ensure_ascii=False, indent=2)
+        # print(f"Results saved to {out_filename}\n")
