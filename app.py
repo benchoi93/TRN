@@ -308,6 +308,38 @@ def build_full_ref_details_html(paper: Dict[str, Any], max_items: int = 999) -> 
     """
 
 
+def select_rationale(ref: Dict[str, Any], page_key: str) -> str:
+    """Pick a rationale string from inspiration_rationale based on page.
+
+    - problem -> line starting with "Problem:" and non-empty content
+    - method -> line starting with "Method:" and non-empty content
+    - evaluation -> line starting with "Evaluation:" and non-empty content
+    - overall -> join all non-empty lines with " | "
+    """
+    rat = ref.get("inspiration_rationale")
+    if isinstance(rat, list):
+        if page_key in ("problem", "method", "evaluation"):
+            pref_map = {"problem": "Problem:", "method": "Method:", "evaluation": "Evaluation:"}
+            pref = pref_map[page_key]
+            for line in rat:
+                if isinstance(line, str) and line.strip().startswith(pref):
+                    content = line.split(":", 1)[1].strip() if ":" in line else line.strip()
+                    if content:
+                        return line
+            return ""
+        else:
+            parts = []
+            for line in rat:
+                if isinstance(line, str):
+                    content = line.split(":", 1)[1].strip() if ":" in line else line.strip()
+                    if content:
+                        parts.append(line)
+            return " | ".join(parts)
+    if isinstance(rat, str):
+        return rat.strip()
+    return ""
+
+
 # ----------------------------
 # HTML renderer (single-page-per-question)
 # ----------------------------
@@ -359,9 +391,9 @@ def render_question_page(
         ev = r.get("evidence_sentences", []) or []
         # tooltip: keep short (first 4 sentences)
         tip_lines = [str(x) for x in ev[:4]]
-        # Build reasoning block: prefer explicit reasoning/explanation if present; otherwise derive from score.
+        # Build reasoning block: prefer inspiration_rationale from JSON; then fall back.
         score_val = cast_score(r.get(score_key, None), _typ)
-        reasoning = r.get("reasoning") or r.get("explanation") or ""
+        reasoning = select_rationale(r, page_key) or r.get("reasoning") or r.get("explanation") or ""
         if not reasoning:
             reasoning = f"High model score ({score_key}) = {score_val}"
         tooltip_text = f"Our reasoning:\n - {reasoning}"
