@@ -391,14 +391,13 @@ def render_question_page(
         ev = r.get("evidence_sentences", []) or []
         # tooltip: keep short (first 4 sentences)
         tip_lines = [str(x) for x in ev[:4]]
-        # Build reasoning block: prefer inspiration_rationale from JSON; then fall back.
-        score_val = cast_score(r.get(score_key, None), _typ)
+        # Build reasoning block: prefer inspiration_rationale from JSON; then fall back without scores.
         reasoning = select_rationale(r, page_key) or r.get("reasoning") or r.get("explanation") or ""
         if not reasoning:
-            reasoning = f"High model score ({score_key}) = {score_val}"
+                reasoning = "No rationale provided; see evidence below."
         tooltip_text = f"Our reasoning:\n - {reasoning}"
-        if score_val is not None:
-            tooltip_text += f"\n - Score: {score_val}"
+        # if score_val is not None:
+        #         tooltip_text += f"\n - Score: {score_val}"
         if tip_lines:
             tooltip_text += "\nEvidence:\n • " + "\n • ".join(tip_lines)
         tooltip = html_escape(tooltip_text)
@@ -517,7 +516,7 @@ def render_question_page(
   <form method="post" action="{html_escape(next_action)}" id="qForm">
     <div class="box">
       <div class="controls">
-        <div class="muted">Showing top {INITIAL_SHOW} by model score ({html_escape(score_key)}). {("Click “Show more” to view additional candidates." if len(candidates) > INITIAL_SHOW else "")}</div>
+        <div class="muted">Showing {INITIAL_SHOW} suggestions. {("Click “Show more” to view additional candidates." if len(candidates) > INITIAL_SHOW else "")}</div>
         <div>
           {show_more_btn}
         </div>
