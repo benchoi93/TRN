@@ -637,7 +637,7 @@ def entry(token: str):
     except HTTPException as e:
         # Return a clear HTML message instead of a plain/blank error page
         return HTMLResponse(f"<p>Invalid token: {html_escape(str(e.detail))}</p><p><a href='/'>Back</a></p>")
-    return RedirectResponse(url=f"/{token}/problem", status_code=303)
+    return RedirectResponse(url=f"/{token}/welcome", status_code=303)
 
 
 # Admin actions: make_tokens (register papers)
@@ -797,6 +797,66 @@ def index():
 """)
 
 
+def render_welcome(token: str, survey: Dict[str, Any], paper: Dict[str, Any]) -> str:
+        """Participant-facing welcome page for a specific survey token."""
+        page_items = "".join(
+                f"<li><b>{html_escape(label)}</b>: {html_escape(desc)}</li>"
+                for (_k, label, _score_key, desc, _typ) in PAGES
+        )
+        title = html_escape(paper.get("title", ""))
+        doi = html_escape(paper.get("doi", ""))
+        authors = html_escape(format_authors(paper.get("authors", "")))
+
+        return f"""<!doctype html>
+<html>
+<head><meta charset='utf-8'/><title>Inspiration Survey</title>
+    <style>
+        body{{font-family:Arial,sans-serif;margin:28px;background:#fafafa;}}
+        .box{{max-width:900px;margin:0 auto;padding:18px;background:#fff;border:1px solid #ddd;border-radius:10px;}}
+        .muted{{color:#555;}}
+        label{{display:block;margin-top:8px;font-weight:bold;}}
+        input[type=text]{{width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;}}
+        ul,ol{{padding-left:20px;}}
+    </style>
+</head>
+<body>
+<div class='box'>
+    <h1>Welcome to the Inspiration Survey</h1>
+    <p>This survey asks you to identify which prior papers inspired different aspects of the target paper below.</p>
+
+    <div class='muted' style='margin:10px 0;'>
+        <div><b>Target paper:</b> {title}</div>
+        <div><b>DOI:</b> {doi}</div>
+        <div><b>Authors:</b> {authors}</div>
+    </div>
+
+    <h3>What you will be asked</h3>
+    <ul>{page_items}</ul>
+
+    <h3>How to decide where a paper fits</h3>
+    <ol>
+        <li><b>Problem vs. Method</b>: Does the paper shape the research question/framework (Problem) or provide techniques/algorithms/implementations (Method)?</li>
+        <li><b>Evaluation</b>: Use this when the influence is mainly about data, experiments, or validation strategy.</li>
+        <li><b>Overall</b>: Use when a paper broadly inspired multiple aspects or is a key anchor reference.</li>
+    </ol>
+
+    <h3>Flow</h3>
+    <ol>
+        <li>You will see one prompt at a time for this paper.</li>
+        <li>For each prompt, pick up to 3 inspiring papers (hover to see evidence and rationale). You can also add an “Other” entry and optional comments.</li>
+        <li>You can navigate back anytime before submitting. On the last page, submit your responses.</li>
+    </ol>
+
+    <div style='margin-top:14px;'>
+        <a href='/{html_escape(token)}/problem' style='display:inline-block;padding:10px 14px;background:#111;color:#fff;text-decoration:none;border-radius:8px;'>Start survey</a>
+    </div>
+
+</div>
+</body>
+</html>
+"""
+
+
 @app.post('/go')
 def go(token: str = Form(...)):
     t = token.strip()
@@ -876,6 +936,11 @@ async def question_page(token: str, page_key: str, redo: str = "", request: Requ
         raise HTTPException(status_code=404, detail="Not found")
 
     survey = load_survey(token)
+
+    # If the path is the welcome page, render the intro
+    if page_key == "welcome":
+        paper = load_paper_json(survey["json_path"]) if survey else {}
+        return render_welcome(token, survey, paper)
 
     # If the path is the thanks page, render it directly (helps avoid routing order issues)
     if page_key == "thanks":
