@@ -145,6 +145,31 @@ def html_escape(x) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+def format_authors(auth) -> str:
+    """Return a human-readable author list, prioritizing '$' names.
+
+    Handles cases where authors is a list of dicts with keys like '@_fa' and '$',
+    a single dict with '$', a plain list of strings, or an existing string.
+    """
+    if auth is None:
+        return ""
+    if isinstance(auth, list):
+        names = []
+        for a in auth:
+            if isinstance(a, dict):
+                name = a.get("$") or a.get("name") or ""
+                if not name:
+                    name = str(a)
+            else:
+                name = str(a)
+            if name:
+                names.append(name)
+        return ", ".join(names)
+    if isinstance(auth, dict):
+        return auth.get("$") or auth.get("name") or ""
+    return str(auth)
+
+
 def cast_score(val, typ):
     try:
         if val is None:
@@ -297,7 +322,7 @@ def render_question_page(
 
     title = html_escape(paper.get("title", ""))
     doi = html_escape(paper.get("doi", ""))
-    authors = html_escape(paper.get("authors", ""))
+    authors = html_escape(format_authors(paper.get("authors", "")))
 
     # Pre-fill existing selections from draft
     existing = (draft.get("answers", {}).get(page_key, {}) or {})
@@ -1210,7 +1235,7 @@ def render_thank_you(token: str, paper: Dict[str, Any], payload: Dict[str, Any] 
     """
     title = html_escape(paper.get("title", ""))
     doi = html_escape(paper.get("doi", ""))
-    authors = html_escape(paper.get("authors", ""))
+    authors = html_escape(format_authors(paper.get("authors", "")))
     answers_html = ""
     if payload:
         ans = payload.get("answers", {})
