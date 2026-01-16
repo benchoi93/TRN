@@ -27,12 +27,16 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 INITIAL_SHOW = 10     # show top 10 initially
 MAX_SHOW = 30         # available via "Show more"
 
-# Page order and their sorting score keys
-PAGES: List[Tuple[str, str, str, type]] = [
-    ("problem",    "Problem / Concept", "problem_concept_inspiration", int),
-    ("method",     "Method",            "method_inspiration",          int),
-    ("evaluation", "Evaluation",        "data_evaluation_inspiration", int),
-    ("overall",    "Overall",           "inspiration_score",           float),
+# Page order and their sorting score keys with descriptions
+PAGES: List[Tuple[str, str, str, str, type]] = [
+    ("problem",    "Problem / Concept", "problem_concept_inspiration", 
+     "Identify papers that inspired the research problem, conceptual framework, or theoretical foundation of the target paper.", int),
+    ("method",     "Method",            "method_inspiration", 
+     "Identify papers that inspired the methodology, analytical approach, or technical implementation used in the target paper.", int),
+    ("evaluation", "Evaluation",        "data_evaluation_inspiration", 
+     "Identify papers that inspired the evaluation strategy, data sources, or validation approach used in the target paper.", int),
+    ("overall",    "Overall",           "inspiration_score", 
+     "Identify papers that provided overall inspiration across multiple aspects (problem, method, and/or evaluation) of the target paper.", float),
 ]
 
 app = FastAPI()
@@ -226,21 +230,21 @@ def mark_submitted(token: str, payload: Dict[str, Any]):
 # Routing utilities
 # ----------------------------
 def next_page_key(current: str) -> str:
-    keys = [k for (k, _, _, _) in PAGES]
+    keys = [k for (k, _, _, _, _) in PAGES]
     idx = keys.index(current)
     return keys[min(idx + 1, len(keys) - 1)]
 
 
 def prev_page_key(current: str) -> str:
-    keys = [k for (k, _, _, _) in PAGES]
+    keys = [k for (k, _, _, _, _) in PAGES]
     idx = keys.index(current)
     return keys[max(idx - 1, 0)]
 
 
 def page_meta(page_key: str):
-    for k, label, score_key, typ in PAGES:
+    for k, label, score_key, description, typ in PAGES:
         if k == page_key:
-            return (label, score_key, typ)
+            return (label, score_key, description, typ)
     raise HTTPException(status_code=404, detail="Unknown page")
 
 
@@ -289,7 +293,7 @@ def render_question_page(
     candidates: List[Dict[str, Any]],
     draft: Dict[str, Any],
 ) -> str:
-    label, score_key, _typ = page_meta(page_key)
+    label, score_key, description, _typ = page_meta(page_key)
 
     title = html_escape(paper.get("title", ""))
     doi = html_escape(paper.get("doi", ""))
@@ -356,7 +360,7 @@ def render_question_page(
         """
 
     # Navigation
-    keys = [k for (k, _, _, _) in PAGES]
+    keys = [k for (k, _, _, _, _) in PAGES]
     is_first = (page_key == keys[0])
     is_last = (page_key == keys[-1])
 
@@ -439,7 +443,8 @@ def render_question_page(
         <div><b>Authors:</b> {authors}</div>
       </div>
     </div>
-    <p class="muted">Select up to <span class="count" id="maxCount">3</span> inspiring papers (unordered). Hover a card to preview evidence.</p>
+    <p style="margin-top: 12px; line-height: 1.5;">{html_escape(description)}</p>
+    <p class="muted" style="margin-top: 8px;">Select up to <span class="count" id="maxCount">3</span> inspiring papers (unordered). Hover a card to preview evidence.</p>
   </div>
 
   <form method="post" action="{html_escape(next_action)}" id="qForm">
