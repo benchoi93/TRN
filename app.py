@@ -359,7 +359,17 @@ def render_question_page(
         ev = r.get("evidence_sentences", []) or []
         # tooltip: keep short (first 4 sentences)
         tip_lines = [str(x) for x in ev[:4]]
-        tooltip = html_escape(" • " + "\n • ".join(tip_lines)) if tip_lines else "No evidence sentences available."
+        # Build reasoning block: prefer explicit reasoning/explanation if present; otherwise derive from score.
+        score_val = cast_score(r.get(score_key, None), _typ)
+        reasoning = r.get("reasoning") or r.get("explanation") or ""
+        if not reasoning:
+            reasoning = f"High model score ({score_key}) = {score_val}"
+        tooltip_text = f"Our reasoning:\n - {reasoning}"
+        if score_val is not None:
+            tooltip_text += f"\n - Score: {score_val}"
+        if tip_lines:
+            tooltip_text += "\nEvidence:\n • " + "\n • ".join(tip_lines)
+        tooltip = html_escape(tooltip_text)
         # Prefill by matching stored selected_ids to the reference id
         checked = "checked" if id_val in selected_ids else ""
         hidden_cls = "hidden" if i >= INITIAL_SHOW else ""
