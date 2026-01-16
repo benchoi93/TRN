@@ -732,36 +732,64 @@ async def admin_make_tokens(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    """Simple front page with token entry and admin access."""
-    # print(ADMIN_KEY)
-    return HTMLResponse(f"""<!doctype html>
+        """Front page with purpose, prompt overview, and token entry."""
+        page_items = "".join(
+                f"<li><b>{html_escape(label)}</b>: {html_escape(desc)}</li>"
+                for (_k, label, _score_key, desc, _typ) in PAGES
+        )
+
+        return HTMLResponse(f"""<!doctype html>
 <html>
 <head><meta charset='utf-8'/><title>Inspiration Survey</title>
-  <style>body{{font-family:Arial,sans-serif;margin:28px;background:#fafafa}}.box{{max-width:720px;margin:0 auto;padding:18px;background:#fff;border:1px solid #ddd;border-radius:8px}}label{{display:block;margin-top:8px;font-weight:bold}}input[type=text]{{width:100%;padding:8px;border:1px solid #ccc;border-radius:6px}}</style>
+    <style>
+        body{{font-family:Arial,sans-serif;margin:28px;background:#fafafa;}}
+        .box{{max-width:900px;margin:0 auto;padding:18px;background:#fff;border:1px solid #ddd;border-radius:10px;}}
+        .muted{{color:#555;}}
+        label{{display:block;margin-top:8px;font-weight:bold;}}
+        input[type=text], input[type=password]{{width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;}}
+        ul,ol{{padding-left:20px;}}
+    </style>
 </head>
 <body>
 <div class='box'>
-  <h1>Welcome to the Inspiration Survey</h1>
-  <p class='muted'>Enter your survey token to begin, or use the admin panel to upload new JSONs.</p>
+    <h1>Welcome to the Inspiration Survey</h1>
+    <p>This survey asks you to identify which prior papers inspired different aspects of a target paper. You will see four short prompts and can select up to three papers for each.</p>
 
-  <form method='post' action='/go'>
-    <label>Survey token</label>
-    <input type='text' name='token' placeholder='Enter token here' />
-    <div style='margin-top:10px;'><button type='submit'>Start</button></div>
-  </form>
+    <h3>What you will be asked</h3>
+    <ul>{page_items}</ul>
 
-  <hr style='margin:18px 0' />
+    <h3>How to decide where a paper fits</h3>
+    <ol>
+        <li><b>Problem vs. Method</b>: Does the paper shape the research question/framework (Problem) or provide techniques/algorithms/implementations (Method)?</li>
+        <li><b>Evaluation</b>: Use this when the influence is mainly about data, experiments, or validation strategy.</li>
+        <li><b>Overall</b>: Use when a paper broadly inspired multiple aspects or is a key anchor reference.</li>
+    </ol>
 
-  <div>
-    <h3>Admin</h3>
-    <p>If you have admin access you can upload new JSON files or manage surveys.</p>
-    <p><a href='/admin/upload/'>Upload JSON</a> &nbsp;|&nbsp; <a href='/admin/list'>Manage surveys</a></p>
-    <form method='post' action='/admin/list' style='margin-top:8px'>
-      <label>Admin key (if required)</label>
-      <input type='password' name='admin_key' placeholder='Admin key' />
-      <div style='margin-top:8px'><button type='submit'>Enter admin panel</button></div>
+    <h3>Flow</h3>
+    <ol>
+        <li>Enter your survey token below to load the target paper.</li>
+        <li>For each prompt, pick up to 3 inspiring papers (hover to see evidence and rationale). You can also add an “Other” entry and optional comments.</li>
+        <li>Review the final page and submit; you can go back anytime before submitting.</li>
+    </ol>
+
+    <form method='post' action='/go' style='margin-top:14px;'>
+        <label>Survey token</label>
+        <input type='text' name='token' placeholder='Enter token here' />
+        <div style='margin-top:10px;'><button type='submit'>Start survey</button></div>
     </form>
-  </div>
+
+    <hr style='margin:18px 0' />
+
+    <div class='muted'>
+        <h3>Admin</h3>
+        <p>If you have admin access you can upload new JSON files or manage surveys.</p>
+        <p><a href='/admin/upload/'>Upload JSON</a> &nbsp;|&nbsp; <a href='/admin/list'>Manage surveys</a></p>
+        <form method='post' action='/admin/list' style='margin-top:8px'>
+            <label>Admin key (if required)</label>
+            <input type='password' name='admin_key' placeholder='Admin key' />
+            <div style='margin-top:8px'><button type='submit'>Enter admin panel</button></div>
+        </form>
+    </div>
 
 </div>
 </body>
