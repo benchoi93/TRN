@@ -827,7 +827,7 @@ async def question_page(token: str, page_key: str, redo: str = "", request: Requ
     paper = load_paper_json(survey["json_path"])
     draft = get_draft(token)
 
-    label, score_key, typ = page_meta(page_key)
+    label, score_key, description, typ = page_meta(page_key)
     candidates = get_candidates_sorted(paper, score_key, typ, top_n=MAX_SHOW)
 
     return render_question_page(token, page_key, paper, candidates, draft)
@@ -1174,7 +1174,7 @@ async def save_page(
     }
     upsert_draft(token, draft)
 
-    keys = [k for (k, _, _, _) in PAGES]
+    keys = [k for (k, _, _, _, _) in PAGES]
     if page_key == keys[-1]:
         # Final submission: build final payload from draft + target paper
         paper = load_paper_json(survey["json_path"])
