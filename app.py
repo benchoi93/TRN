@@ -66,6 +66,7 @@ def ensure_db():
   CREATE TABLE IF NOT EXISTS surveys (
     token TEXT PRIMARY KEY,
     json_path TEXT NOT NULL,
+    role TEXT,
     created_at TEXT NOT NULL,
     submitted_at TEXT
   )
@@ -359,7 +360,14 @@ def render_question_page(
     # Pre-fill existing selections from draft
     existing = (draft.get("answers", {}).get(page_key, {}) or {})
     # Normalize selected ids to strings so comparisons with candidate ids work
-    selected_ids = set(str(x) for x in (existing.get("selected_ids", []) or []))
+    existing_answers = existing.get("selected_ids", []) or []
+    selected_ids = set(str(x) for x in existing_answers)
+    
+    # Check if 'UNSURE' is selected
+    is_unsure = "UNSURE" in selected_ids
+    if is_unsure:
+        selected_ids.remove("UNSURE")
+
     # CSV of selected ids for initial hidden input value
     selected_csv = ",".join(selected_ids)
     other_text = html_escape(existing.get("other_text", ""))
@@ -370,12 +378,75 @@ def render_question_page(
     full_details = build_full_ref_details_html(paper)
 
     # helper for candidate label
+    # helper for candidate label
     def cand_label(r: Dict[str, Any]) -> str:
-        rid = str(r.get("id", ""))
-        fa = r.get("first_author", "")
-        yr = r.get("year", "")
+        # Authors: join distinct names. Data usually has list of last names.
+        authors_val = r.get("authors")
+        if isinstance(authors_val, list):
+            # filter and join
+            auth_str = ", ".join([str(a) for a in authors_val if a])
+        else:
+            auth_str = str(authors_val or r.get("first_author") or "")
+        
+        yr = str(r.get("year", ""))
         rt = r.get("title", "")
-        return f"{fa} ({yr}) — {rt}"
+        
+        # Venue: heuristic extraction from raw_match by removing the title
+        venue = ""
+        raw = r.get("raw_match", "")
+        if raw and rt:
+            # Try to find title in raw string (ignoring case/punctuation slightly?)
+            # For now, simple string split
+            if rt in raw:
+                parts = raw.split(rt, 1)
+                if len(parts) > 1:
+                    venue = parts[1].strip(" .,")
+            else:
+                # Fallback: case-insensitive
+                idx = raw.lower().find(rt.lower())
+                if idx != -1:
+                    venue = raw[idx+len(rt):].strip(" .,")
+
+        # Construct citation
+        # "Nassir, Hickman, Ma (2015). Title. Venue."
+        chunks = []
+        if auth_str:
+            chunks.append(f"{auth_str} ({yr})")
+        else:
+            chunks.append(f"({yr})")
+        
+        chunks.append(f"{rt}.")
+        if venue:
+            chunks.append(venue)
+        
+        return " ".join(chunks)
+    
+    # JS for unsure handling
+    unsure_script = """
+    <script>
+    function toggleUnsure(checkbox) {
+      const inputs = document.querySelectorAll('input.pick');
+      if (checkbox.checked) {
+          inputs.forEach(el => {
+              el.checked = false;
+              el.disabled = true;
+          });
+      } else {
+          inputs.forEach(el => {
+              el.disabled = false;
+          });
+      }
+    }
+    // Also attach listeners to picks to verify mutual exclusion? 
+    // Not strictly needed if unsure disables them, but for initial load:
+    document.addEventListener("DOMContentLoaded", function() {
+        const u = document.getElementById('unsureCheck');
+        if (u && u.checked) {
+             toggleUnsure(u);
+        }
+    });
+    </script>
+    """
 
     # Build cards (top INITIAL_SHOW visible; rest hidden until "Show more")
     cards_html = ""
@@ -415,6 +486,20 @@ def render_question_page(
           </label>
         </div>
         """
+    
+    # Add Unsure Option
+    unsure_checked = "checked" if is_unsure else ""
+    cards_html += f"""
+    <div class="card" style="margin-top:14px; border-left:4px solid #f57c00;">
+      <label class="card-inner">
+        <input type="checkbox" id="unsureCheck" name="unsure" value="true" {unsure_checked} onchange="toggleUnsure(this)"/>
+        <div class="card-text">
+            <b>Unsure / None</b>
+            <div class="muted" style="font-size:0.8em;">Check this if you are unsure or none of the suggested papers are relevant.</div>
+        </div>
+      </label>
+    </div>
+    """
 
     # show more button if needed
     show_more_btn = ""
@@ -469,13 +554,16 @@ def render_question_page(
     .card-inner {{ display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }}
     .card-text {{ line-height: 1.25; }}
     .hidden {{ display: none; }}
+  </style>
+  {unsure_script}
+  <style>
     .tooltip {{
       display: none;
       position: absolute;
       left: 12px;
       right: 12px;
-      top: 100%;
-      margin-top: 6px;
+      bottom: 100%;
+      margin-bottom: 6px;
       background: #1f1f1f;
       color: #fff;
       padding: 10px;
@@ -676,39 +764,62 @@ async def admin_make_tokens(request: Request):
     created = []
     updated = []
     try:
-        # Build a quick map of existing json_path -> token (normalized paths)
-        rows = conn.execute("SELECT token, json_path FROM surveys").fetchall()
-        path_to_token = {}
+        # Build a map of existing (json_path, role) -> token
+        # Check if column exists (migration hack for sqlite)
+        try:
+             conn.execute("SELECT role FROM surveys LIMIT 1")
+        except Exception:
+             try:
+                 conn.execute("ALTER TABLE surveys ADD COLUMN role TEXT")
+             except Exception:
+                 pass
+
+        rows = conn.execute("SELECT token, json_path, role FROM surveys").fetchall()
+        # Map: normalized_path -> role -> token
+        existing_map = {} 
         for r in rows:
             try:
                 pnorm = os.path.normpath(r['json_path'])
             except Exception:
                 pnorm = r['json_path']
-            # path_to_token[pnorm] = r['token']
-            path_to_token[pnorm] = secrets.token_urlsafe(16)  # short but unguessable enough for prototype
+            
+            role = r['role'] or 'first'
+            if pnorm not in existing_map:
+                existing_map[pnorm] = {}
+            existing_map[pnorm][role] = r['token']
 
         now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+        
+        # We want to ensure specific roles exist for each paper
+        TARGET_ROLES = [('first', '_fa'), ('corresponding', '_ca')]
+
         for jp in json_files:
             jp_norm = os.path.normpath(jp)
-            if jp_norm in path_to_token:
-                # already registered for this file; update json_path and created_at to now
-                token = path_to_token[jp_norm]
-                conn.execute(
-                    "UPDATE surveys SET json_path=?, created_at=? WHERE token=?",
-                    (jp, now, token),
-                )
-                updated.append((token, jp))
-            else:
-                # create a new random token
-                token = secrets.token_urlsafe(16)
-                # ensure uniqueness (very unlikely collision)
-                while conn.execute("SELECT 1 FROM surveys WHERE token=?", (token,)).fetchone():
+            if jp_norm not in existing_map:
+                existing_map[jp_norm] = {}
+
+            for role, suffix in TARGET_ROLES:
+                if role in existing_map[jp_norm]:
+                    # Update existing
+                    token = existing_map[jp_norm][role]
+                    conn.execute(
+                        "UPDATE surveys SET json_path=?, created_at=? WHERE token=?",
+                        (jp, now, token),
+                    )
+                    updated.append((token, f"{jp} [{role}]"))
+                else:
+                    # Create new
                     token = secrets.token_urlsafe(16)
-                conn.execute(
-                    "INSERT INTO surveys(token, json_path, created_at, submitted_at) VALUES (?, ?, ?, NULL)",
-                    (token, jp, now),
-                )
-                created.append((token, jp))
+                    # ensure uniqueness
+                    while conn.execute("SELECT 1 FROM surveys WHERE token=?", (token,)).fetchone():
+                        token = secrets.token_urlsafe(16)
+                    
+                    conn.execute(
+                        "INSERT INTO surveys(token, json_path, role, created_at, submitted_at) VALUES (?, ?, ?, ?, NULL)",
+                        (token, jp, role, now),
+                    )
+                    created.append((token, f"{jp} [{role}]"))
+
         conn.commit()
     finally:
         conn.close()
@@ -723,11 +834,11 @@ async def admin_make_tokens(request: Request):
     if updated:
         parts.append("<h3>Updated</h3><ul>")
         for t, p in updated:
-            parts.append(f"<li><code>{html_escape(t)}</code> updated -> {html_escape(p)}</li>")
+            parts.append(f"<li><code>{html_escape(t)}</code> updated -&gt; {html_escape(p)}</li>")
         parts.append("</ul>")
 
     parts.append("<p><a href='/admin/list'>Back to list</a></p>")
-    return HTMLResponse('\n'.join(parts))
+    return HTMLResponse('\\n'.join(parts))
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -798,16 +909,16 @@ def index():
 
 
 def render_welcome(token: str, survey: Dict[str, Any], paper: Dict[str, Any]) -> str:
-        """Participant-facing welcome page for a specific survey token."""
-        page_items = "".join(
-                f"<li><b>{html_escape(label)}</b>: {html_escape(desc)}</li>"
-                for (_k, label, _score_key, desc, _typ) in PAGES
-        )
-        title = html_escape(paper.get("title", ""))
-        doi = html_escape(paper.get("doi", ""))
-        authors = html_escape(format_authors(paper.get("authors", "")))
+    """Participant-facing welcome page for a specific survey token."""
+    page_items = "".join(
+        f"<li><b>{html_escape(label)}</b>: {html_escape(desc)}</li>"
+        for (_k, label, _score_key, desc, _typ) in PAGES
+    )
+    title = html_escape(paper.get("title", ""))
+    doi = html_escape(paper.get("doi", ""))
+    authors = html_escape(format_authors(paper.get("authors", "")))
 
-        return f"""<!doctype html>
+    return f"""<!doctype html>
 <html>
 <head><meta charset='utf-8'/><title>Paper Inspiration Survey</title>
     <style>
@@ -822,7 +933,6 @@ def render_welcome(token: str, survey: Dict[str, Any], paper: Dict[str, Any]) ->
 <body>
 <div class='box'>
     <h1>Welcome to the Paper Inspiration Survey</h1>
-    <p>This survey asks you to identify which prior papers inspired different aspects of the target paper below.</p>
 
     <div class='muted' style='margin:10px 0;'>
         <div><b>Target paper:</b> {title}</div>
@@ -831,8 +941,20 @@ def render_welcome(token: str, survey: Dict[str, Any], paper: Dict[str, Any]) ->
     </div>
 
     <h3>Background and Purpose</h3>
-    <p>Understanding the influences behind research papers helps map the evolution of ideas and methods in the field. By identifying which prior works inspired different aspects of a paper, we can better appreciate the research landscape and the connections between studies.</p>
-    # TODO 
+    <p>
+      Traditional citation metrics often reduce the impact of a paper to a simple count, missing the nuance of <i>how</i> it influenced subsequent work. 
+      Our goal is to move beyond simple counting and understand the <b>nature of inspiration</b>—whether a paper shaped the research problem, provided a key method, or established an evaluation standard.
+    </p>
+    <p>
+      This survey validates an automated "Inspiration Score" system. We are comparing our automated predictions against your expert judgment as an author.
+    </p>
+
+    <h3>How we use LLMs</h3>
+    <p>
+      We use Large Language Models (LLMs) to analyze the full text of your paper and identify references that appear to handle core aspects of your research.
+      The suggestions you will see on the next pages were pre-selected by our model as likely candidates for "inspiring references."
+      <b>Your feedback will help us train and validate this system to better recognize meaningful scientific contributions.</b>
+    </p>
 
     <h3>What you will be asked</h3>
     <ul>{page_items}</ul>
@@ -847,7 +969,8 @@ def render_welcome(token: str, survey: Dict[str, Any], paper: Dict[str, Any]) ->
     <h3>Flow</h3>
     <ol>
         <li>You will see one prompt at a time for this paper.</li>
-        <li>For each prompt, pick up to 3 inspiring papers (hover to see evidence and rationale). You can also add an “Other” entry and optional comments.</li>
+        <li>For each prompt, pick up to 3 inspiring papers (hover to see evidence and rationale). 
+            <br/>If you are unsure or no listed paper fits, you can select "Unsure / None".</li>
         <li>You can navigate back anytime before submitting. On the last page, submit your responses.</li>
     </ol>
 
@@ -1287,6 +1410,7 @@ async def save_page(
     other_text: str = Form(default=""),
     comment: str = Form(default=""),
     selected_ids_json: str = Form(default=""),
+    unsure: bool = Form(default=False),
 ):
     survey = load_survey(token)
 
@@ -1315,6 +1439,8 @@ async def save_page(
     # Enforce max 3 server-side as well. Prefer JS-provided CSV if present.
     if selected_ids_json:
         parsed_selected = [s for s in selected_ids_json.split(",") if s]
+    elif unsure:
+        parsed_selected = ["UNSURE"]
     else:
         parsed_selected = [s for s in selected_ids if s and s != "OTHER"]
 
