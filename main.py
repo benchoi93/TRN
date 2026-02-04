@@ -65,10 +65,19 @@ import json
 
 for i, row in tqdm(df_filtered.iterrows(), total=len(df_filtered)):
     doi = row["prism:doi"]
-    inspiring_refs = extract_inspiring_references(doi, API_KEY, INST_KEY, OPENAI_KEY)
+
+    # if output file already exists, skip
     out_filename = output_dir / (doi.replace("/", "_") + "_inspiring_refs.json")
+    
+    if out_filename.exists():
+        print(f"Skipping existing file: {out_filename}")
+        continue
+
+    inspiring_refs = extract_inspiring_references(doi, API_KEY, INST_KEY, OPENAI_KEY)
+
+    if inspiring_refs is None:
+        print(f"No inspiring references found for DOI: {doi}")
+        continue
+
     with open(out_filename, "w", encoding="utf-8") as f:
         json.dump(inspiring_refs, f, ensure_ascii=False, indent=2)
-
-    if i >= 10:  # limit to first 10 papers for testing
-        break

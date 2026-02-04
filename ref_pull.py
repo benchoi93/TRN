@@ -55,7 +55,7 @@ def scopus_ref_via_ip(doi: str, apikey: str, insttoken: str):
 
     params = {"view": "REF"}  # ensure REF view is requested
     # params = { }  # ensure REF view is requested
-    timeout = httpx.Timeout(100.0, connect=60.0)
+    timeout = httpx.Timeout(100.0, connect=60 * 10)
 
     with httpx.Client(timeout=timeout, headers=headers) as client:
         url = f"https://api.elsevier.com/content/abstract/doi/{doi}"
@@ -775,17 +775,18 @@ def extract_inspiring_references(
         title = fulldoc.data["coredata"]["dc:title"]
         abstract = fulldoc.data["coredata"].get("dc:description", "")
         print(f"Successfully retrieved document: {title}")
+        # print title and authors
+        authors = fulldoc.data["coredata"].get("dc:creator", "")
+        print(f"Title: {title}")
+        print(f"Authors: {authors}")
+
+        references = scopus_ref_via_ip(doi, api_key, inst_token)
+        ref_list = references["abstracts-retrieval-response"]["references"]["reference"]
     except Exception as e:
         print(f"Error retrieving document: {e}")
         exit(1)
+        return None
 
-    # print title and authors
-    authors = fulldoc.data["coredata"].get("dc:creator", "")
-    print(f"Title: {title}")
-    print(f"Authors: {authors}")
-
-    references = scopus_ref_via_ip(doi, api_key, inst_token)
-    ref_list = references["abstracts-retrieval-response"]["references"]["reference"]
 
     ref_info = preprocess_refs(ref_list)
     ref_block = _extract_reference_block(fulltext)

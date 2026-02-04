@@ -443,7 +443,7 @@ def render_question_page(
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Inspiration Survey</title>
+  <title>Paper Inspiration Survey</title>
   <style>
     body {{ font-family: Arial, sans-serif; margin: 28px; background: #fafafa; }}
     .container {{ max-width: 1100px; margin: 0 auto; }}
@@ -740,7 +740,7 @@ def index():
 
         return HTMLResponse(f"""<!doctype html>
 <html>
-<head><meta charset='utf-8'/><title>Inspiration Survey</title>
+<head><meta charset='utf-8'/><title>Paper Inspiration Survey</title>
     <style>
         body{{font-family:Arial,sans-serif;margin:28px;background:#fafafa;}}
         .box{{max-width:900px;margin:0 auto;padding:18px;background:#fff;border:1px solid #ddd;border-radius:10px;}}
@@ -752,7 +752,7 @@ def index():
 </head>
 <body>
 <div class='box'>
-    <h1>Welcome to the Inspiration Survey</h1>
+    <h1>Welcome to the Paper Inspiration Survey</h1>
     <p>This survey asks you to identify which prior papers inspired different aspects of a target paper. You will see four short prompts and can select up to three papers for each.</p>
 
     <h3>What you will be asked</h3>
@@ -809,7 +809,7 @@ def render_welcome(token: str, survey: Dict[str, Any], paper: Dict[str, Any]) ->
 
         return f"""<!doctype html>
 <html>
-<head><meta charset='utf-8'/><title>Inspiration Survey</title>
+<head><meta charset='utf-8'/><title>Paper Inspiration Survey</title>
     <style>
         body{{font-family:Arial,sans-serif;margin:28px;background:#fafafa;}}
         .box{{max-width:900px;margin:0 auto;padding:18px;background:#fff;border:1px solid #ddd;border-radius:10px;}}
@@ -821,7 +821,7 @@ def render_welcome(token: str, survey: Dict[str, Any], paper: Dict[str, Any]) ->
 </head>
 <body>
 <div class='box'>
-    <h1>Welcome to the Inspiration Survey</h1>
+    <h1>Welcome to the Paper Inspiration Survey</h1>
     <p>This survey asks you to identify which prior papers inspired different aspects of the target paper below.</p>
 
     <div class='muted' style='margin:10px 0;'>
@@ -829,6 +829,10 @@ def render_welcome(token: str, survey: Dict[str, Any], paper: Dict[str, Any]) ->
         <div><b>DOI:</b> {doi}</div>
         <div><b>Authors:</b> {authors}</div>
     </div>
+
+    <h3>Background and Purpose</h3>
+    <p>Understanding the influences behind research papers helps map the evolution of ideas and methods in the field. By identifying which prior works inspired different aspects of a paper, we can better appreciate the research landscape and the connections between studies.</p>
+    # TODO 
 
     <h3>What you will be asked</h3>
     <ul>{page_items}</ul>
