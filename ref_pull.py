@@ -796,13 +796,102 @@ def extract_inspiring_references(
 
     ref_scored = score_inspiration(title, abstract, ref_evidence_filled, api_key=openai_key)
 
+    # Note: authors is a list of dicts [{'@_fa': 'true', '$': 'Name'}, ...] or just strings?
+    # Based on debug output: [{'@_fa': 'true', '$': 'Ng, Max T.M.'}, ...]
+    # Let's parse it properly.
+    author_list = []
+    if isinstance(authors, list):
+        for a in authors:
+            if isinstance(a, dict):
+                author_list.append(a.get('$', ''))
+            else:
+                author_list.append(str(a))
+    elif isinstance(authors, str):
+        author_list = [authors]
+    
+    first_author = author_list[0] if author_list else ""
+    corresponding_author = first_author # Default
+    
+    corresponding_author_email = ""
+    first_author_email = ""
+    
+    # Try to find specific corresponding author via email
+    import re
+    emails = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', fulltext)
+    if emails:
+        # distinct emails
+        emails = list(set(emails))
+        
+        # 1. Identify Corresponding Author Email
+        # Check proximity to "Corresponding author"
+        best_email = ""
+        idx_cor = fulltext.lower().find("corresponding author")
+        
+        if idx_cor != -1:
+            # Find email closest to this index
+            min_dist = 1000000
+            for em in emails:
+                idx_em = fulltext.find(em)
+                if idx_em != -1:
+                    dist = abs(idx_em - idx_cor)
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_email = em
+        else:
+             # Fallback: just take the first email if no "Corresponding author" text found
+             # Or maybe the one that appears most? No, contact info usually appears once.
+             # Let's take the first one if list exists
+             best_email = emails[0]
+             
+        corresponding_author_email = best_email
+
+        # 2. Identify Corresponding Author Name based on email
+        # Heuristic: check if author surname is in email
+        for auth in author_list:
+            parts = re.split(r'[\s,]+', auth)
+            parts = [p.lower() for p in parts if len(p) > 2] # ignore initials
+            
+            score = 0
+            for p in parts:
+                if p in best_email.lower():
+                    score += 1
+            
+            if score > 0:
+                # Strong candidate
+                corresponding_author = auth
+                break
+        
+        # 3. Identify First Author Email
+        # Check if first author name is in any of the emails
+        if first_author:
+            f_parts = re.split(r'[\s,]+', first_author)
+            f_parts = [p.lower() for p in f_parts if len(p) > 2]
+            
+            for em in emails:
+                score = 0
+                for p in f_parts:
+                    if p in em.lower():
+                        score += 1
+                if score > 0:
+                    first_author_email = em
+                    break
+        
+        # If first author IS the corresponding author (detected by name match), copy email
+        if first_author == corresponding_author and not first_author_email:
+             first_author_email = corresponding_author_email
+
+
     # Print top 5 inspiring references
     sorted_refs = sorted(ref_scored, key=lambda x: x["inspiration_score"], reverse=True)
 
     output = {
         "doi": doi,
         "title": title,
-        "authors": authors,
+        "authors": author_list,
+        "first_author": first_author,
+        "first_author_email": first_author_email,
+        "corresponding_author": corresponding_author,
+        "corresponding_author_email": corresponding_author_email,
         "inspiring_references": sorted_refs
     }
 
@@ -845,4 +934,4 @@ if __name__ == "__main__":
         out_path = os.path.join(out_dir, out_filename)
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(inspiring_refs, f, ensure_ascii=False, indent=2)
-        # print(f"Results saved to {out_filename}\n")
+        print(f"Results saved to {out_filename}\n")

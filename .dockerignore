@@ -13,7 +13,6 @@ dist/
 .cache/
 *.sqlite3
 *.db
-data/
 responses/
 .env
 .DS_Store

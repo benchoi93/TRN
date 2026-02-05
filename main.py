@@ -20,15 +20,15 @@ ISSN = "0968-090X"  # ISSN for Transportation Research Part C
 
 client = ElsClient(api_key=API_KEY, inst_token=INST_KEY)
 
-from elsapy.elssearch import ElsSearch
-from elsapy.utils import recast_df
+# from elsapy.elssearch import ElsSearch
+# from elsapy.utils import recast_df
 
-search = ElsSearch(f"issn({ISSN})", "scopus")
-search.execute(els_client=client, get_all=True, count=5000)
+# search = ElsSearch(f"issn({ISSN})", "scopus")
+# search.execute(els_client=client, get_all=True, count=5000)
 
-import pandas as pd
-df = recast_df(pd.DataFrame(search.results))
-df.to_json("trc_papers.json", orient="records", lines=True)
+# import pandas as pd
+# df = recast_df(pd.DataFrame(search.results))
+# df.to_json("trc_papers.json", orient="records", lines=True)
 
 json_path = "trc_papers.json"
 import pandas as pd
@@ -51,33 +51,34 @@ month_full   = pd.to_datetime(df["month_name"], format="%B", errors="coerce").dt
 
 df["month"] = month_abbrev.fillna(month_full)
 
-df = df.sort_values(by=["year", "month"], ascending=False)
+years = [2024, 2025]
 
-df_filtered = df[df["year"].isin([2024])]
-df_filtered.reset_index(drop=True, inplace=True)
+for year in years:
+    df_filtered = df[df["year"] == year]
+    df_filtered.reset_index(drop=True, inplace=True)
 
-from pathlib import Path
-output_dir = Path("trc_2024_inspiring_refs")
-output_dir.mkdir(exist_ok=True)
+    from pathlib import Path
+    output_dir = Path(f"trc_{year}_inspiring_refs")
+    output_dir.mkdir(exist_ok=True)
 
-from tqdm import tqdm
-import json
+    from tqdm import tqdm
+    import json
 
-for i, row in tqdm(df_filtered.iterrows(), total=len(df_filtered)):
-    doi = row["prism:doi"]
+    for i, row in tqdm(df_filtered.iterrows(), total=len(df_filtered)):
+        doi = row["prism:doi"]
 
-    # if output file already exists, skip
-    out_filename = output_dir / (doi.replace("/", "_") + "_inspiring_refs.json")
-    
-    if out_filename.exists():
-        print(f"Skipping existing file: {out_filename}")
-        continue
+        # if output file already exists, skip
+        out_filename = output_dir / (doi.replace("/", "_") + "_inspiring_refs.json")
+        
+        if out_filename.exists():
+            print(f"Skipping existing file: {out_filename}")
+            continue
 
-    inspiring_refs = extract_inspiring_references(doi, API_KEY, INST_KEY, OPENAI_KEY)
+        inspiring_refs = extract_inspiring_references(doi, API_KEY, INST_KEY, OPENAI_KEY)
 
-    if inspiring_refs is None:
-        print(f"No inspiring references found for DOI: {doi}")
-        continue
+        if inspiring_refs is None:
+            print(f"No inspiring references found for DOI: {doi}")
+            continue
 
-    with open(out_filename, "w", encoding="utf-8") as f:
-        json.dump(inspiring_refs, f, ensure_ascii=False, indent=2)
+        with open(out_filename, "w", encoding="utf-8") as f:
+            json.dump(inspiring_refs, f, ensure_ascii=False, indent=2)

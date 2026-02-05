@@ -20,6 +20,7 @@ if os.path.exists("config.env"):
     load_dotenv("config.env")
 
 DB_PATH = os.environ.get("DB_PATH", "data/survey.db")
+PAPERS_DIR = os.environ.get("PAPERS_DIR", "data/papers")
 RESPONSES_DIR = os.environ.get("RESPONSES_DIR", "responses")
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 
@@ -46,6 +47,108 @@ app = FastAPI()
 def health():
     """Simple health check for Fly or load balancer probes."""
     return JSONResponse(content={"status": "ok"})
+
+
+@app.get('/admin/clear_db', response_class=HTMLResponse)
+def admin_clear_db_page(request: Request):
+    """Show a confirmation page to clear all surveys/responses/drafts from the DB.
+    Optionally allow removing files on disk. Requires admin auth or shows admin_key input.
+    """
+    authenticated = False
+    if ADMIN_KEY:
+        cookie = request.cookies.get('admin_auth')
+        if cookie and verify_admin_token(cookie):
+            authenticated = True
+
+    if not authenticated and ADMIN_KEY:
+        # show minimal login prompt (POST form) that posts back to this endpoint
+        return HTMLResponse("""<!doctype html><html><body style='font-family:Arial,sans-serif;margin:28px'>
+    <h2>Admin — Enter key to clear DB</h2>
+    <form method='post' action='/admin/clear_db'>
+      <input name='admin_key' type='password' placeholder='admin key'/>
+      <button type='submit'>Enter</button>
+    </form>
+    </body></html>""")
+
+    # Authenticated: show confirmation form
+    return HTMLResponse(f"""<!doctype html><html><body style='font-family:Arial,sans-serif;margin:28px'>
+    <h2>Clear survey database</h2>
+    <p>This will remove all rows from <code>surveys</code>, <code>responses</code>, and <code>drafts</code>.</p>
+    <p>Optionally remove JSON files under the papers folder and saved responses under the responses folder.</p>
+    <form method='post' action='/admin/clear_db'>
+      <label><input type='checkbox' name='remove_files'/> Also remove JSON and response files on disk</label><br/>
+      <div style='margin-top:12px'><button type='submit' style='background:#b22222;color:#fff;padding:8px;border-radius:6px;border:none;'>Confirm clear DB</button></div>
+    </form>
+    <p><a href='/admin/list'>Cancel</a></p>
+    </body></html>""")
+
+
+@app.post('/admin/clear_db', response_class=HTMLResponse)
+def admin_clear_db_action(request: Request, admin_key: str = Form(default=''), remove_files: str = Form(default='')):
+    """Perform clearing of DB rows and optionally delete files. Requires admin auth.
+    """
+    # Auth (cookie or posted admin_key)
+    if ADMIN_KEY:
+        cookie = request.cookies.get('admin_auth')
+        if cookie and verify_admin_token(cookie):
+            pass
+        else:
+            if not admin_key or admin_key != ADMIN_KEY:
+                raise HTTPException(status_code=401, detail='Invalid admin key')
+
+    # Count existing rows for reporting
+    conn = db()
+    try:
+        cnt_surveys = conn.execute('SELECT COUNT(*) as c FROM surveys').fetchone()['c']
+        cnt_responses = conn.execute('SELECT COUNT(*) as c FROM responses').fetchone()['c']
+        cnt_drafts = conn.execute('SELECT COUNT(*) as c FROM drafts').fetchone()['c']
+
+        # Delete rows
+        conn.execute('DELETE FROM responses')
+        conn.execute('DELETE FROM drafts')
+        conn.execute('DELETE FROM surveys')
+        conn.commit()
+    finally:
+        conn.close()
+
+    removed_files = []
+    if remove_files:
+        # Remove JSON files under data/papers
+        base_dir = os.path.dirname(DB_PATH) or 'data'
+        papers_dir = os.path.join(base_dir, 'papers')
+        if os.path.isdir(papers_dir):
+            for fn in os.listdir(papers_dir):
+                fp = os.path.join(papers_dir, fn)
+                try:
+                    if os.path.isfile(fp):
+                        os.remove(fp)
+                        removed_files.append(fp)
+                except Exception:
+                    pass
+        # Remove response files
+        try:
+            os.makedirs(RESPONSES_DIR, exist_ok=True)
+            for fn in os.listdir(RESPONSES_DIR):
+                fp = os.path.join(RESPONSES_DIR, fn)
+                try:
+                    if os.path.isfile(fp):
+                        os.remove(fp)
+                        removed_files.append(fp)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    parts = [
+        f"<p>Cleared database: removed {cnt_surveys} surveys, {cnt_responses} responses, {cnt_drafts} drafts.</p>"]
+    if removed_files:
+        parts.append('<h3>Removed files</h3><ul>')
+        for p in removed_files:
+            parts.append(f"<li>{html_escape(p)}</li>")
+        parts.append('</ul>')
+    parts.append("<p><a href='/admin/list'>Back to list</a></p>")
+
+    return HTMLResponse('\n'.join(parts))
 
 
 # ----------------------------
@@ -751,8 +854,7 @@ async def admin_make_tokens(request: Request):
             if provided != ADMIN_KEY:
                 raise HTTPException(status_code=401, detail='Invalid admin key')
 
-    base_dir = os.path.dirname(DB_PATH) or 'data'
-    papers_dir = os.path.join(base_dir, 'papers')
+    papers_dir = PAPERS_DIR
     os.makedirs(papers_dir, exist_ok=True)
 
     pattern = os.path.join(papers_dir, '*.json')
@@ -1361,25 +1463,23 @@ async def admin_upload(request: Request,
                 errors.append((filename, f'save failed: {e}'))
                 continue
 
-            # Token: always generate a random, unguessable token for uploads
-            tok = secrets.token_urlsafe(16)
-            # Ensure uniqueness (very unlikely collision)
-            while conn.execute("SELECT 1 FROM surveys WHERE token=?", (tok,)).fetchone():
+            # Generate tokens for both roles
+            TARGET_ROLES = [('first', '_fa'), ('corresponding', '_ca')]
+            
+            for role, suffix in TARGET_ROLES:
                 tok = secrets.token_urlsafe(16)
+                while conn.execute("SELECT 1 FROM surveys WHERE token=?", (tok,)).fetchone():
+                    tok = secrets.token_urlsafe(16)
 
-            if not tok:
-                errors.append((filename, 'empty token'))
-                continue
-
-            try:
-                conn.execute(
-                    "INSERT INTO surveys(token, json_path, created_at, submitted_at) VALUES (?, ?, ?, NULL) "
-                    "ON CONFLICT(token) DO UPDATE SET json_path=excluded.json_path, created_at=excluded.created_at, submitted_at=NULL",
-                    (tok, dest_path, now),
-                )
-                saved.append((tok, dest_path))
-            except Exception as e:
-                errors.append((filename, f'db error: {e}'))
+                try:
+                    conn.execute(
+                        "INSERT INTO surveys(token, json_path, role, created_at, submitted_at) VALUES (?, ?, ?, ?, NULL) "
+                        "ON CONFLICT(token) DO UPDATE SET json_path=excluded.json_path, role=excluded.role, created_at=excluded.created_at, submitted_at=NULL",
+                        (tok, dest_path, role, now),
+                    )
+                    saved.append((tok, f"{dest_path} [{role}]"))
+                except Exception as e:
+                    errors.append((filename, f'db error ({role}): {e}'))
 
         conn.commit()
     finally:
@@ -1636,23 +1736,79 @@ async def admin_list(request: Request):
 
     # At this point either ADMIN_KEY is empty or the user is authenticated
     conn = db()
+    # Migration safety check
+    try:
+         conn.execute("SELECT role FROM surveys LIMIT 1")
+    except Exception:
+         try:
+             conn.execute("ALTER TABLE surveys ADD COLUMN role TEXT")
+         except Exception:
+             pass
+
     rows = conn.execute(
-        "SELECT token, json_path, created_at, submitted_at FROM surveys ORDER BY created_at DESC").fetchall()
+        "SELECT token, json_path, role, created_at, submitted_at FROM surveys ORDER BY created_at DESC").fetchall()
     conn.close()
 
     items = []
     for r in rows:
         token = html_escape(r['token'])
         path = html_escape(r['json_path'])
+        role = html_escape(r['role'] or 'first')
         created = html_escape(r['created_at'] or '')
         submitted = html_escape(r['submitted_at'] or '')
-        # Delete form uses cookie-based auth now; do not include admin_key in the form
+        
+        # Parse paper info for Paper ID
+        paper_id = "Unknown"
+        try:
+            # We must be careful about path resolution if running across envs, 
+            # but usually json_path is relative or absolute local.
+            # Only try if file exists
+            if os.path.exists(r['json_path']):
+                with open(r['json_path'], 'r', encoding='utf-8') as f:
+                    pdata = json.load(f)
+                    
+                    # Author
+                    auth = pdata.get('first_author')
+                    if not auth:
+                        # try to get from authors format
+                        # reuse cand_label logic? or format_authors?
+                        # let's just use simple heuristic
+                        a_raw = pdata.get('authors')
+                        auth = format_authors(a_raw)
+                    
+                    year = pdata.get('year') or "" # Year usually missing in top-level? 
+                    # Actually valid trc papers usually have 'year' inside 'inspiring_references' 
+                    # but top level might just be title/authors/doi. 
+                    # Let's check a sample. 104575.json -> has title, authors, doi. 
+                    # No explicit year at top level? 
+                    # Let's use Title instead.
+                    
+                    title = pdata.get('title') or "Untitled"
+                    
+                    # Truncate title
+                    if len(title) > 60:
+                        title = title[:60] + "..."
+                        
+                    paper_id = f"{auth} — {title}"
+        except Exception:
+            pass
+
+        paper_id = html_escape(paper_id)
+
         items.append(
-            f"<tr><td>{token}</td><td>{created}</td><td>{submitted}</td><td><a href='/{token}/problem'>Open</a></td><td>{path}</td><td>"
+            f"<tr>"
+            f"<td>{paper_id}</td>"
+            f"<td>{role}</td>"
+            f"<td><a href='/{token}/welcome' target='_blank'>{token}</a></td>"
+            f"<td>{created}</td>"
+            f"<td>{submitted}</td>"
+            f"<td><a href='/{token}/welcome'>Open</a></td>"
+            f"<td>"
             f"<form method='post' action='/admin/delete' style='display:inline'>"
             f"<input type='hidden' name='token' value='{token}'/>"
-            f"<label style='margin-left:8px;'><input type='checkbox' name='delete_files'/> Remove files</label> "
-            f"<button type='submit' style='margin-left:8px;'>Delete</button></form></td></tr>"
+            f"<label style='margin-left:8px;'><input type='checkbox' name='delete_files'/> File</label> "
+            f"<button type='submit' style='margin-left:8px;color:red;'>Del</button></form></td>"
+            f"</tr>"
         )
 
     table = """
@@ -1673,7 +1829,15 @@ async def admin_list(request: Request):
     </form>
     </p>
 <table border='1' cellpadding='6' style='border-collapse:collapse; width:100%'>
-<tr><th>Token</th><th>Created</th><th>Submitted</th><th>Open</th><th>JSON path</th><th>Actions</th></tr>
+<tr>
+    <th>Paper ID</th>
+    <th>Role</th>
+    <th>Token</th>
+    <th>Created</th>
+    <th>Submitted</th>
+    <th>Open</th>
+    <th>Actions</th>
+</tr>
 {rows}
 </table>
 </body></html>
@@ -1738,104 +1902,6 @@ def admin_delete(request: Request, admin_key: str = Form(default=''), token: str
   </body></html>
   """)
 
-    @app.get('/admin/clear_db', response_class=HTMLResponse)
-    def admin_clear_db_page(request: Request):
-        """Show a confirmation page to clear all surveys/responses/drafts from the DB.
-        Optionally allow removing files on disk. Requires admin auth or shows admin_key input.
-        """
-        authenticated = False
-        if ADMIN_KEY:
-            cookie = request.cookies.get('admin_auth')
-            if cookie and verify_admin_token(cookie):
-                authenticated = True
 
-        if not authenticated and ADMIN_KEY:
-            # show minimal login prompt (POST form) that posts back to this endpoint
-            return HTMLResponse("""<!doctype html><html><body style='font-family:Arial,sans-serif;margin:28px'>
-        <h2>Admin — Enter key to clear DB</h2>
-        <form method='post' action='/admin/clear_db'>
-          <input name='admin_key' type='password' placeholder='admin key'/>
-          <button type='submit'>Enter</button>
-        </form>
-        </body></html>""")
-
-        # Authenticated: show confirmation form
-        return HTMLResponse(f"""<!doctype html><html><body style='font-family:Arial,sans-serif;margin:28px'>
-        <h2>Clear survey database</h2>
-        <p>This will remove all rows from <code>surveys</code>, <code>responses</code>, and <code>drafts</code>.</p>
-        <p>Optionally remove JSON files under the papers folder and saved responses under the responses folder.</p>
-        <form method='post' action='/admin/clear_db'>
-          <label><input type='checkbox' name='remove_files'/> Also remove JSON and response files on disk</label><br/>
-          <div style='margin-top:12px'><button type='submit' style='background:#b22222;color:#fff;padding:8px;border-radius:6px;border:none;'>Confirm clear DB</button></div>
-        </form>
-        <p><a href='/admin/list'>Cancel</a></p>
-        </body></html>""")
-
-    @app.post('/admin/clear_db', response_class=HTMLResponse)
-    def admin_clear_db_action(request: Request, admin_key: str = Form(default=''), remove_files: str = Form(default='')):
-        """Perform clearing of DB rows and optionally delete files. Requires admin auth.
-        """
-        # Auth (cookie or posted admin_key)
-        if ADMIN_KEY:
-            cookie = request.cookies.get('admin_auth')
-            if cookie and verify_admin_token(cookie):
-                pass
-            else:
-                if not admin_key or admin_key != ADMIN_KEY:
-                    raise HTTPException(status_code=401, detail='Invalid admin key')
-
-        # Count existing rows for reporting
-        conn = db()
-        try:
-            cnt_surveys = conn.execute('SELECT COUNT(*) as c FROM surveys').fetchone()['c']
-            cnt_responses = conn.execute('SELECT COUNT(*) as c FROM responses').fetchone()['c']
-            cnt_drafts = conn.execute('SELECT COUNT(*) as c FROM drafts').fetchone()['c']
-
-            # Delete rows
-            conn.execute('DELETE FROM responses')
-            conn.execute('DELETE FROM drafts')
-            conn.execute('DELETE FROM surveys')
-            conn.commit()
-        finally:
-            conn.close()
-
-        removed_files = []
-        if remove_files:
-            # Remove JSON files under data/papers
-            base_dir = os.path.dirname(DB_PATH) or 'data'
-            papers_dir = os.path.join(base_dir, 'papers')
-            if os.path.isdir(papers_dir):
-                for fn in os.listdir(papers_dir):
-                    fp = os.path.join(papers_dir, fn)
-                    try:
-                        if os.path.isfile(fp):
-                            os.remove(fp)
-                            removed_files.append(fp)
-                    except Exception:
-                        pass
-            # Remove response files
-            try:
-                os.makedirs(RESPONSES_DIR, exist_ok=True)
-                for fn in os.listdir(RESPONSES_DIR):
-                    fp = os.path.join(RESPONSES_DIR, fn)
-                    try:
-                        if os.path.isfile(fp):
-                            os.remove(fp)
-                            removed_files.append(fp)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-        parts = [
-            f"<p>Cleared database: removed {cnt_surveys} surveys, {cnt_responses} responses, {cnt_drafts} drafts.</p>"]
-        if removed_files:
-            parts.append('<h3>Removed files</h3><ul>')
-            for p in removed_files:
-                parts.append(f"<li>{html_escape(p)}</li>")
-            parts.append('</ul>')
-        parts.append("<p><a href='/admin/list'>Back to list</a></p>")
-
-        return HTMLResponse('\n'.join(parts))
 
     # (moved) admin_make_tokens is registered earlier to avoid route collision with dynamic token route
